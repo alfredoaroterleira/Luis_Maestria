@@ -1,0 +1,257 @@
+---
+title: "¿Quiénes protestan? - Trabajo Maestría"
+author: "Luis Alberto Chávez"  
+date: "`r Sys.Date()`"
+output:
+  rmdformats::robobook:
+    highlight: kate
+---
+
+# Preparando la data
+
+```{r}
+rm(list = ls()) # limpiar el working environment
+
+linkADrive='https://docs.google.com/spreadsheets/d/e/2PACX-1vQoN_1tfvAClKCO6wjHLy7rGNdbZx2nuvTm99d2FzrwIoohr2rqetFfCLTErgYYTg/pub?gid=486140846&single=true&output=csv'
+
+protestas=read.csv(linkADrive)
+
+head(protestas)
+```
+
+```{r}
+str(protestas)
+```
+
+```{r}
+protestas$PP_Nac_Loc = as.factor(protestas$PP_Nac_Loc) #lo convertimos a una variable categórica ya que R lo puede leer mal
+protestas$PP_Nom = as.factor(protestas$PP_Nom)  #también lo convertimos a una variable categórica
+```
+
+
+# Exploración Univariada de nuestra variable dependiente: Conflictos
+
+Aquí podemos ver el valor mínimo, máximo, los cuartiles.
+```{r}
+summary(protestas$CONFLICTOS)
+```
+
+Pero nos faltan alguns estadígrafos:
+
+```{r}
+library(DescTools)
+allStats=c(summary(protestas$CONFLICTOS),
+  sd=sd(protestas$CONFLICTOS), # variabilidad (en relacion a la media)
+  skew=Skew(protestas$CONFLICTOS), # asimetria (positiva o negativa)
+  kurt=Kurt(protestas$CONFLICTOS), # concentración (enpinada / aplanada)
+  cv=CoefVar(protestas$CONFLICTOS)) # variabilidad (mayor o menor que uno)
+allStats
+```
+
+Podemos verlo en el siguiente histograma:
+
+```{r}
+library(ggplot2)
+
+base=ggplot(data=protestas,
+            aes(x=CONFLICTOS))
+histogram= base + geom_histogram(aes(y = after_stat(density)),
+                 colour = 1, fill = "white",bins=10) +  
+    stat_function(fun = dnorm,
+                  args = list(mean = allStats['Mean'],
+                              sd = allStats['sd']),col='red')
+    
+histogram
+```
+
+Podemos verlo en un boxplot:
+
+```{r}
+base=ggplot(data=protestas,
+            aes(y=CONFLICTOS))
+boxplot=base + geom_boxplot() 
+
+boxplot
+
+```
+
+Podemos identificar a los atípicos:
+
+```{r}
+valuesFromBox=ggplot_build(boxplot)$data[[1]]
+valuesFromBox
+```
+
+```{r}
+outliersLocales=valuesFromBox$outliers[[1]]
+outliersLocales
+```
+Podemos calcular los outliers usando los máximos y mínimos teóricos:
+
+```{r}
+valuesFromBox[c('ymin','ymax')]
+```
+
+Entonces, los valores que excedan 11 serán considerados atípicos:
+
+```{r}
+protestas[protestas$CONFLICTOS>11,]
+```
+
+Podemos decir que las protestas se distribuyen por lo general entre 0 y 11 entre todos los distritos del Cusco. Asimismo, a través de la mediana, notamos que la mitad de los distritos tienen a lo más 1 conflicto. Por otro lado, los distritos destacados son 15; sin embargo, podemos apreciar como Cusco posee una distancia considerable con sus pares.
+
+
+# Regresión Poisson
+
+En nuestro caso, lo ideal resulta ser correr una regresión Poisson, ya que nuestra variable dependiente se trata de un conteo, el conteo de los conflictos a nivel distrital. 
+
+```{r}
+library("modelsummary")
+
+hipo = formula(CONFLICTOS ~ PP_Nac_Loc + PP_Nom + ALTITUD + TRANS_TOTAL_MILL + EJE_TOTAL_MILL + POR_EJE_RELA + RENTA_PER)
+
+rp = glm(hipo, data = protestas,
+         offset = log(POBLACION),   # variable de control: población
+         family = poisson(link = "log"))
+
+modelo = list('Poisson asegurado (I)' = rp)
+
+modelsummary(modelo,
+             title = "Regresión Poisson",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+Lectura de la tabla, pero se necesita la exponenciación
+
+
+```{r}
+formatoNum <- function(x) format(x, digits = 4, scientific = FALSE)
+
+modelsummary(modelo,
+             fmt=formatoNum, # uso mi formula
+             exponentiate = T, # exponenciar!!!!!
+             statistic = 'conf.int',
+             title = "Regresión Poisson - coeficientes exponenciados",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+
+Interpretación
+
+
+## Equidispersión
+
+Uno de los supuestos de la regresión Poisson señala que tanto la media y la varianza deben ser iguales. Para conocer si nuestra regresión cumple esa condición probemos lo siguiente:
+
+```{r}
+library(magrittr)
+library(kableExtra)
+
+overdispersion=AER::dispersiontest(rp,alternative='greater')$ p.value<0.05
+underdispersion=AER::dispersiontest(rp,alternative='less')$ p.value<0.05
+# tabla
+testResult=as.data.frame(rbind(overdispersion,underdispersion))
+names(testResult)='Es probable?'
+testResult%>%kable(caption = "Test de Equidispersión")%>%kableExtra::kable_styling()
+```
+
+Interpretación:
+
+### Quasi Poisson
+
+Útil para la sobredispersión y subdispersión.
+
+```{r}
+rqp = glm(hipo, data = protestas,
+          offset = log(POBLACION),
+          family = quasipoisson(link="log"))
+
+modelsummary(rqp,
+             title = "Regresión QuasiPoisson",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+
+
+### Binomial Negativa
+
+Útil solo para la sobredispersión
+
+```{r}
+library(MASS)
+
+hipo_bn = formula(CONFLICTOS ~ PP_Nac_Loc + PP_Nom + ALTITUD + TRANS_TOTAL_MILL + EJE_TOTAL_MILL + POR_EJE_RELA + RENTA_PER + offset(log(POBLACION)))
+
+rbn = glm.nb(hipo_bn, data = protestas)
+
+modelsummary(rbn,
+             title = "Regresión BinomialNegativa",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+
+
+## Vemos nuestras regresiones
+
+```{r}
+todos_modelos = list('Poisson'= rp,
+                     'Quasi Poisson'= rqp,
+                     'Binomial Negativa'= rbn)
+
+modelsummary(todos_modelos, fmt=formatoNum,
+             exponentiate = T,
+             statistic = 'conf.int',
+             title = "EXP de las Regresiones",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+
+# Comparando modelos
+
+```{r}
+# poisson case
+performance::check_overdispersion(rp)
+```
+
+```{r}
+# quasipoisson case
+performance::check_overdispersion(rqp)
+```
+
+```{r}
+# negative binomial case
+performance::check_overdispersion(rbn)
+```
+
+Como no son modelos anidados, usamos la tabla anova con cuidado, pidiendo un test chi-cuadrado:
+
+```{r}
+anova(rp,rqp,rbn,test = "Chisq") %>%
+kable(caption = "Tabla ANOVA para comparar modelos")%>%kableExtra::kable_styling(full_width = FALSE)
+```
+
+Aquí nos fijamos en el Resid.Dev, si decae de una regresión a otra suele ser mejor la última opción.
+
+
+Podemos emplear otra prueba:
+```{r}
+lmtest::lrtest(rp,rbn)%>%
+kable(caption = "loglikelihood ratio test")%>%kableExtra::kable_styling(full_width = FALSE)
+```
+
+Aquí nos fijamos en el LogLik, si el número se acerca más al 0 de una regresión a otra, suele ser mejor.
+
+
+
+
+
+
+
+
+
+
