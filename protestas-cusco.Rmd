@@ -1,0 +1,463 @@
+---
+title: "¿Quiénes protestan? - Trabajo Maestría"
+author: "Luis Alberto Chávez"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Preparando la data
+
+```{r}
+library(tinytex)
+```
+
+
+```{r}
+rm(list = ls()) # limpiar el working environment
+
+linkADrive='https://docs.google.com/spreadsheets/d/e/2PACX-1vQoN_1tfvAClKCO6wjHLy7rGNdbZx2nuvTm99d2FzrwIoohr2rqetFfCLTErgYYTg/pub?gid=486140846&single=true&output=csv'
+
+protestas=read.csv(linkADrive)
+
+head(protestas)
+```
+
+```{r}
+str(protestas)
+```
+
+Le damos formato a nuestras variables
+```{r}
+protestas$PP_Nac_Loc = as.factor(protestas$PP_Nac_Loc) #lo convertimos a una variable categórica ya que R lo puede leer mal
+protestas$PP_Nom = as.factor(protestas$PP_Nom)  #también lo convertimos a una variable categórica
+```
+
+
+# **Exploración Univariada de nuestra variable dependiente: Conflictos (contando a Cusco)**
+
+```{r}
+summary(protestas$CONFLICTOS)
+```
+
+Vemos los estadígrafos:
+```{r}
+library(DescTools)
+allStats=c(summary(protestas$CONFLICTOS),
+  sd=sd(protestas$CONFLICTOS), # variabilidad (en relacion a la media)
+  skew=Skew(protestas$CONFLICTOS), # asimetria (positiva o negativa)
+  kurt=Kurt(protestas$CONFLICTOS), # concentración (enpinada / aplanada)
+  cv=CoefVar(protestas$CONFLICTOS)) # variabilidad (mayor o menor que uno)
+allStats
+```
+
+Empleando un histograma:
+```{r}
+library(ggplot2)
+
+base=ggplot(data=protestas,
+            aes(x=CONFLICTOS))
+histogram= base + geom_histogram(aes(y = after_stat(density)),
+                 colour = 1, fill = "white",bins=10) +  
+    stat_function(fun = dnorm,
+                  args = list(mean = allStats['Mean'],
+                              sd = allStats['sd']),col='red')
+    
+histogram
+```
+
+Y en un boxplot:
+```{r}
+base=ggplot(data=protestas,
+            aes(y=CONFLICTOS))
+boxplot=base + geom_boxplot() 
+
+boxplot
+```
+
+```{r}
+library(dplyr)
+protestas %>%
+  arrange(desc(CONFLICTOS)) %>%
+  slice_head(n = 5)
+
+```
+
+Podemos observar como Cusco concentra un mayor número de conflictos. Esto se debe a las limitaciones en la creación de la base de datos. Es por ello que, por motivos metodológicos, vamos a obviar al distrito de Cusco y el resto de filas que cuenten con valores vacíos para nuestros cálculos.
+
+
+Borramos los NAs, y nos percatamos que nos quedan 81 observaciones/distritos. Nuestro trabajo aún sigue en pie!
+```{r}
+protestas <- protestas[complete.cases(protestas), ]
+```
+
+
+
+# **Exploración Univariada de nuestra variable dependiente: Conflictos (sin Cusco, ni NA's)**
+
+Aquí podemos ver el valor mínimo, máximo, los cuartiles.
+```{r}
+summary(protestas$CONFLICTOS)
+```
+
+Pero nos faltan alguns estadígrafos:
+
+```{r}
+library(DescTools)
+allStats=c(summary(protestas$CONFLICTOS),
+  sd=sd(protestas$CONFLICTOS), # variabilidad (en relacion a la media)
+  skew=Skew(protestas$CONFLICTOS), # asimetria (positiva o negativa)
+  kurt=Kurt(protestas$CONFLICTOS), # concentración (enpinada / aplanada)
+  cv=CoefVar(protestas$CONFLICTOS)) # variabilidad (mayor o menor que uno)
+allStats
+```
+
+Podemos verlo en el siguiente histograma:
+
+```{r}
+library(ggplot2)
+
+base=ggplot(data=protestas,
+            aes(x=CONFLICTOS))
+histogram= base + geom_histogram(aes(y = after_stat(density)),
+                 colour = 1, fill = "white",bins=10) +  
+    stat_function(fun = dnorm,
+                  args = list(mean = allStats['Mean'],
+                              sd = allStats['sd']),col='red')
+    
+histogram
+```
+
+Podemos verlo en un boxplot:
+
+```{r}
+base=ggplot(data=protestas,
+            aes(y=CONFLICTOS))
+boxplot=base + geom_boxplot() 
+
+boxplot
+
+```
+Observamos como la data mejora, así que vamos por un buen camino.
+
+
+Podemos identificar a los atípicos:
+```{r}
+valuesFromBox=ggplot_build(boxplot)$data[[1]]
+valuesFromBox
+```
+
+```{r}
+outliersLocales=valuesFromBox$outliers[[1]]
+outliersLocales
+```
+
+Podemos calcular los outliers usando los máximos y mínimos teóricos:
+```{r}
+valuesFromBox[c('ymin','ymax')]
+```
+
+**Entonces, los valores que excedan 9 serán considerados atípicos: Tabla Atípicos**
+```{r}
+protestas[protestas$CONFLICTOS>9,]
+```
+
+Podemos decir que las protestas se distribuyen por lo general entre 0 y 9 entre todos los distritos del departamento del Cusco. Asimismo, a través de la mediana, notamos que la mitad de los distritos sostiene 1 conflicto en el año 2023. Por otro lado, los distritos destacados son 7. 
+
+
+**Podemos agrupar las protestas por provincias:**
+```{r}
+library(dplyr)
+protestas_provincias <- protestas %>%
+  group_by(NOM_PROV) %>%
+  summarise(total_conflictos = sum(CONFLICTOS, na.rm = TRUE))
+
+protestas_provincias
+```
+
+
+
+# Regresión Poisson
+
+En nuestro caso, lo ideal resulta ser correr una regresión Poisson, ya que nuestra variable dependiente se trata de un conteo, el conteo de los conflictos a nivel distrital. 
+
+Nuestra hipótesis destaca que el número de conflictos en los distritos del Cusco, se encuentran afectados por el tipo de partido (ya sea nacionalista o local), la transferencia total por canon gasífero en millones, la renta per cápita, la altitud, el porcentaje de ejecución presupuestal y el número de días de atraso en obras públicas.
+
+```{r}
+library("modelsummary")
+
+hipo = formula(CONFLICTOS ~ PP_Nac_Loc + TRANS_TOTAL_MILL + RENTA_PER + ALTITUD + PORC_EJEC + DIAS_ATRASO)
+
+rp = glm(hipo, data = protestas,
+         offset = log(POBLACION),   # variable de control: población
+         family = poisson(link = "log"))
+
+modelo = list('Poisson asegurado (I)' = rp)
+
+modelsummary(modelo,
+             title = "Regresión Poisson",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+Si bien esta primera tabla nos da un vistazo inicial, es necesario exponenciar los valores.
+
+```{r}
+formatoNum <- function(x) format(x, digits = 4, scientific = FALSE)
+
+modelsummary(modelo,
+             fmt=formatoNum, # uso mi formula
+             exponentiate = T, # exponenciar!!!!!
+             statistic = 'conf.int',
+             title = "Regresión Poisson - coeficientes exponenciados",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+
+## Equidispersión
+
+Sin embargo, uno de los supuestos de la regresión Poisson señala que tanto la media y la varianza deben ser iguales. Para conocer si nuestra regresión cumple esa condición corremos la siguiente prueba:
+
+```{r}
+library(magrittr)
+library(kableExtra)
+
+overdispersion=AER::dispersiontest(rp,alternative='greater')$ p.value<0.05
+underdispersion=AER::dispersiontest(rp,alternative='less')$ p.value<0.05
+# tabla
+testResult=as.data.frame(rbind(overdispersion,underdispersion))
+names(testResult)='Es probable?'
+testResult%>%kable(caption = "Test de Equidispersión")%>%kableExtra::kable_styling()
+```
+
+Hemos hallado la presencia de sobredispersión, por lo que debemos correr una regresión Quasi Poisson y una Binomial Negativa
+
+### Quasi Poisson
+
+Útil para la sobredispersión y subdispersión.
+
+```{r}
+rqp = glm(hipo, data = protestas,
+          offset = log(POBLACION),
+          family = quasipoisson(link="log"))
+
+modelsummary(rqp,
+             title = "Regresión QuasiPoisson",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+
+
+### Binomial Negativa
+
+Útil solo para la sobredispersión
+
+```{r}
+library(MASS)
+
+hipo_bn = formula(CONFLICTOS ~ PP_Nac_Loc + TRANS_TOTAL_MILL + RENTA_PER + ALTITUD + PORC_EJEC + DIAS_ATRASO + offset(log(POBLACION)))
+
+rbn = glm.nb(hipo_bn, data = protestas)
+
+modelsummary(rbn,
+             title = "Regresión BinomialNegativa",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+
+
+## Vemos nuestras regresiones
+
+```{r}
+todos_modelos = list('Poisson'= rp,
+                     'Quasi Poisson'= rqp,
+                     'Binomial Negativa'= rbn)
+
+modelsummary(todos_modelos, fmt=formatoNum,
+             exponentiate = T,
+             statistic = 'conf.int',
+             title = "EXP de las Regresiones",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+
+# Comparando modelos
+
+```{r}
+# poisson case
+performance::check_overdispersion(rp)
+```
+
+```{r}
+# quasipoisson case
+performance::check_overdispersion(rqp)
+```
+
+```{r}
+# negative binomial case
+library(DHARMa)
+performance::check_overdispersion(rbn)
+```
+
+Por el momento vemos que la mejor regresión resulta ser la Binomial Negativa, ya que elimina la sobredispersión.
+
+
+
+Asimismo, como no son modelos anidados, usamos la tabla anova con cuidado, pidiendo un test chi-cuadrado, para comparar los modelos:
+```{r}
+anova(rp,rqp,rbn,test = "Chisq") %>%
+kable(caption = "Tabla ANOVA para comparar modelos")%>%kableExtra::kable_styling(full_width = FALSE)
+```
+
+Aquí nos fijamos en el Resid.Dev, si decae de una regresión a otra suele ser mejor la última opción.
+
+
+Podemos emplear otra prueba:
+```{r}
+lmtest::lrtest(rp,rbn)%>%
+kable(caption = "loglikelihood ratio test")%>%kableExtra::kable_styling(full_width = FALSE)
+```
+
+Aquí nos fijamos en el LogLik, si el número se acerca más al 0 de una regresión a otra, suele ser mejor.
+
+
+
+
+# **Nuestra tabla de interés**
+
+Por todos los resultados, podemos quedarnos con la regresión Binomial Negativa para comprender los resultados:
+
+```{r}
+modelo_bn = list('Binomial Negativa asegurado (I)' = rbn)
+
+formatoNum <- function(x) format(x, digits = 4, scientific = FALSE)
+
+modelsummary(modelo_bn,
+             fmt=formatoNum, # uso mi formula
+             exponentiate = T, # exponenciar!!!!!
+             statistic = 'conf.int',
+             title = "Regresión Binomial Negativa - coeficientes exponenciados",
+             stars = TRUE,
+             output = "kableExtra")
+```
+
+
+Podemos verlo mejor con el siguiente gráfico:
+
+```{r}
+library(ggplot2)
+dotwhisker::dwplot(list(BinomialNegativa=rbn),exp=T) + scale_y_discrete(labels=c("Días atraso", "Porcentaje\nejecución", "Altitud", "Renta\nper cápita", "Transferencia\ntotal", "Partido\nlocal")) + scale_color_discrete(name="Modelos para:\nCantidad de Asegurados") + geom_vline(
+           xintercept = 1,
+           colour = "grey60",
+           linetype = 2
+       )
+```
+
+Como podemos apreciar, ninguna de nuestras variables resultan significativas. 
+
+
+# Distribución de protestas por tipo de partido (nacional - local)
+
+```{r}
+ggplot(protestas, aes(x = PP_Nac_Loc, y = CONFLICTOS)) +
+  geom_boxplot(fill = "skyblue") +
+  scale_x_discrete(labels = c(
+    "1" = "Partido Nacional",
+    "2" = "Partido Local")) +
+  labs(title = "Distribución de conflictos por partido",
+       x = "Partido",
+       y = "Número de conflictos") +
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+
+¿Y cómo se distribuye el tipo de partido en todos los distritos?
+```{r}
+library(ggplot2)
+library(dplyr)
+
+protestas %>%
+  count(PP_Nac_Loc) %>%
+  ggplot(aes(x= PP_Nac_Loc, y = n, fill = PP_Nac_Loc)) +
+  geom_col() +
+  scale_x_discrete(labels = c(
+    "1" = "Partido Nacional",
+    "2" = "Partido Local")) +
+  labs(tittle= "Distribución de distritos por tipo de partido",
+       x = "Tipo de partido",
+       y = "Número de distritos") +
+  theme_minimal()
+```
+
+
+
+## Comparamos la transferencia
+
+```{r}
+library(dplyr)
+
+presupuesto_provincia <- protestas %>%
+  group_by(NOM_PROV) %>%
+  summarise(presupuesto_total = sum(TRANS_TOTAL_MILL, na.rm = TRUE)) %>%
+  arrange(desc(presupuesto_total))
+
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(presupuesto_provincia, aes(x = reorder(NOM_PROV,presupuesto_total), y = presupuesto_total)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Transferencia por provincia", x = "Provincia", y = "Transferencia total por canon gasífero (millones)") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+## Comparamos Megantoni con las provincias
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# 1. Obtener presupuesto por provincia
+provincia_df <- protestas %>%
+  group_by(NOM_PROV) %>%
+  summarise(TRANS_TOTAL_MILL = sum(TRANS_TOTAL_MILL, na.rm = TRUE))
+
+# 2. Obtener presupuesto de Megantoni
+megantoni_df <- protestas %>%
+  filter(NOM_DIST == "MEGANTONI") %>%
+  summarise(NOM_PROV = "MEGANTONI",
+            TRANS_TOTAL_MILL = sum(TRANS_TOTAL_MILL, na.rm = TRUE))
+
+# 3. Unir ambos
+comparacion_df <- bind_rows(provincia_df, megantoni_df)
+
+# 4. Graficar
+ggplot(comparacion_df, aes(x = reorder(NOM_PROV, TRANS_TOTAL_MILL), y = TRANS_TOTAL_MILL)) +
+  geom_col(fill = ifelse(comparacion_df$NOM_PROV == "MEGANTONI", "red", "steelblue")) +
+  coord_flip() +
+  labs(title = "Transferencia por provincia (incluyendo Megantoni)",
+       x = "Provincia / Distrito",
+       y = "Transferencia total por canon gasífero (millones)") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+# Descargamos la data
+
+```{r}
+library(writexl)
+write_xlsx(protestas, path = "protestas.xlsx")
+```
+
+
